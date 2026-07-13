@@ -1,0 +1,43 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# ### Merger les 2 inputs 
+#  - Joint les deux fichiers (AlltimePR et WO_all_time) avec WO = WO Ref.
+#  - Ajoute une colonne NRC? : "NRC" si la colonne Task commence par "NRC", sinon "Normal"
+#  - Sauvegarde le résultat dans merged_all_PR_WO.xlsx
+#  - Affiche un résumé
+
+# In[1]:
+
+
+##########################################################################
+# Merge les 2 fichiers WO_All_Time.xlsx et AlltimePR_until_260526.xlsx
+# utilisant la clé 'WO Ref.' = 'WO'
+# Ajout colonne "NRC?" = "NRC" si Task commence par "NRC", sinon "Normal"
+#
+# Inputs : input_data/WO_All_Time.xlsx
+#          input_data/AlltimePR_until_260526.xlsx
+# Output : merged_all_PR_WO.xlsx
+##########################################################################
+
+import pandas as pd
+
+file1 = "input_data/WO_All_Time.xlsx"
+file2 = "input_data/AlltimePR_until_260526.xlsx"
+merge_file = "merged_all_PR_WO.xlsx"
+
+df1 = pd.read_excel(file1)
+df2 = pd.read_excel(file2)
+merged = df1.merge(df2, left_on="WO Ref.", right_on="WO", how="left", suffixes=("", "_file2"))
+
+# Ajout nouvelle colonne "NRC?" (NRC ou Normal) 
+merged["NRC?"] = merged["Task"].astype(str).str.startswith("NRC").map({True: "NRC", False: "Normal"})
+
+# Final info
+merged.to_excel(merge_file, index=False)
+print(f"Fichier créé: {merge_file}")
+print(f"Colonnes: {len(df1.columns)} → {len(merged.columns)}")
+print(f"Lignes: {len(df1)} → {len(merged)}")
+
+print(f"Normal Task: {(merged['NRC?'] == 'Normal').sum()} ({(merged['NRC?'] == 'Normal').sum() / len(merged) * 100:.1f}%)")
+print(f"NRC Task: {(merged['NRC?'] == 'NRC').sum()} ({(merged['NRC?'] == 'NRC').sum() / len(merged) * 100:.1f}%)")

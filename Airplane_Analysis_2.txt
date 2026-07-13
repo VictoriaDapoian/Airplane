@@ -1,0 +1,192 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+
+
+###############################################################################
+# DESCRIPTION
+#
+# Ce script analyse un historique de Work Orders (WO) afin d'estimer la
+# probabilité de NRC et les Part Numbers (PN) associés pour une liste de
+# tâches à planifier.
+#
+# Inputs :
+#   - merged_all_PR_WO.xlsx : historique des WO, MR References, Tasks, PN, Qty
+#     et NRC.
+#   - input_data/Task_to_plan.xlsx : liste des tâches à analyser (TASK_REF).
+#
+# Pour chaque tâche, le script :
+#   - Recherche les MR References correspondantes.
+#   - Calcule les statistiques NRC (lignes NRC, WO avec NRC, probabilité).
+#   - Génère des statistiques par MR Reference.
+#   - Identifie les PN utilisés dans les tâches NRC ainsi que leurs quantités
+#     min, moyennes et max observées.
+#
+# Outputs :
+#   - Un fichier Excel par tâche dans le dossier output_previsions/.
+#   - Chaque fichier contient :
+#       * un onglet "Résumé" avec les statistiques et prévisions NRC.
+#       * un onglet "Détails" avec le détail MR Reference > WO > Task > PN.
+#
+###############################################################################
+
+
+import pandas as pd
+from pathlib import Path
+from tqdm import tqdm
+
+#### Input infos 
+merge_file = "merged_all_PR_WO.xlsx"
+task_file = "input_data/Task_to_plan.xlsx"
+output_base = Path("output_previsions")      # dossier output
+
+#### Lecture du merged file 
+df = pd.read_excel(merge_file)
+print(f"{len(df)} lignes chargées\n")
+
+for col in ["MR Reference", "Task", "PN", "WO Ref."]:    # processing colonnes importantes
+    if col in df.columns:
+        df[col] = df[col].astype(str).str.strip()
+
+df["Qty"] = pd.to_numeric(df["Qty"], errors="coerce").fillna(0)  # colonne Qty remplie de 0 si pas de valeurs numeriques
+
+
+##### Analyser chaque tache 
+def analyse_task(input_task, df, output_dir):
+    task_df = df[df["MR Reference"].str.startswith(input_task, na=False)].copy()  # regarde specifique tache "input_task"
+    mr_refs = sorted(task_df["MR Reference"].dropna().unique())                   # mr ref unique
+
+    if len(mr_refs) == 0:
+        print(f"{input_task}: aucune MR Reference trouvée!")
+        return
+
+    # Calculs globaux
+    total_lignes   = len(task_df)
+    nb_wos_uniques = task_df["WO Ref."].nunique()
+    nb_lignes_nrc  = int((task_df["NRC?"] == "NRC").sum())
+    wos_avec_nrc   = int(task_df.groupby("WO Ref.")["NRC?"].apply(lambda x: (x == "NRC").any()).sum())
+    proba_globale  = round(nb_lignes_nrc / total_lignes * 100, 1) if total_lignes > 0 else 0
+
+    # Stats par MR Reference
+    mr_stats = (
+        task_df.groupby("MR Reference").agg(
+            nb_wos=("WO Ref.", "nunique"),                         #nb WO ref unique
+            nb_lignes_nrc=("NRC?", lambda x: (x == "NRC").sum())   #nb lignes NRC
+        )
+        .reset_index()
+    )
+
+    # Détails MR Reference > WO > Task > PN
+    summary_rows = []
+    for mr_ref in mr_refs:
+        mr_df = task_df[task_df["MR Reference"] == mr_ref]
+        for wo, wo_df in mr_df.groupby("WO Ref."):
+            for task, task_group in wo_df.groupby("Task"):
+                is_nrc = str(task).upper().startswith("NRC")
+                task_type = "NRC" if is_nrc else "Normal"
+                
+                # addition des qty our chaque PN 
+                pn_summary = (
+                    task_group.groupby("PN")["Qty"]
+                    .sum()
+                    .reset_index()
+                    .rename(columns={"Qty": "Total_Qty"})
+                    .sort_values("PN")
+                )
+                for _, r in pn_summary.iterrows():
+                    if str(r["PN"]).lower() in ("nan", ""):
+                        continue
+                    summary_rows.append({
+                        "MR Reference": mr_ref,
+                        "WO Ref.": wo,
+                        "Task": task,
+                        "Task_Type": task_type,
+                        "PN": r["PN"],
+                        "Total_Qty": r["Total_Qty"]
+                    })
+
+    # Creation dataframe output pour tab "Details"
+    summary_df = pd.DataFrame(summary_rows)
+
+    # Garde seulement les lignes NRC
+    nrc_df = summary_df[summary_df["Task_Type"] == "NRC"].copy() if not summary_df.empty else pd.DataFrame()
+
+    
+    #### Construction du résumé
+    def row(cat="", met="", qmin="", qavg="", qmax=""):
+        return {"Catégorie": cat, "Métrique": met, "Qté min": qmin, "Qté avg": qavg, "Qté max": qmax}
+
+    resume_rows = []
+
+    # PROBABILITÉ NRC
+    resume_rows.append(row("PROBABILITÉ NRC"))
+    resume_rows.append(row("Task", input_task))
+    resume_rows.append(row("Nb MR References", len(mr_refs)))
+    resume_rows.append(row("Nb WOs uniques", nb_wos_uniques))
+    resume_rows.append(row("Nb lignes total", total_lignes))
+    resume_rows.append(row("Nb lignes NRC", nb_lignes_nrc))
+    resume_rows.append(row("Nb WOs avec NRC", wos_avec_nrc))
+    resume_rows.append(row("Probabilité NRC (%)", proba_globale))
+    resume_rows.append(row())
+    resume_rows.append(row())
+
+    # PROBA PAR MR REFERENCE
+    resume_rows.append(row("PROBA PAR MR REFERENCE"))
+    for _, r in mr_stats.iterrows():
+        nb_wos = r["nb_wos"]
+        nb_nrc = int(r["nb_lignes_nrc"])
+        pct = round(nb_nrc / nb_wos * 100, 1) if nb_wos > 0 else 0
+        resume_rows.append(row(r["MR Reference"], f"{nb_nrc} lignes NRC/{nb_wos} WOs      ({pct}%)"))
+    resume_rows.append(row())
+    resume_rows.append(row())
+
+    # INFOS PNs NRC
+    resume_rows.append(row("INFOS PNs NRC", "", "Qté min", "Qté avg", "Qté max"))
+    if not nrc_df.empty:
+        for pn, pn_group in nrc_df.groupby("PN"):        # loop pour chaque PN unique dans NRC tasks
+            wos_with_pn = pn_group["WO Ref."].nunique()  # nb de WOs avec ce PN
+            freq = round(wos_with_pn / nb_wos_uniques * 100, 1) if nb_wos_uniques > 0 else 0
+            qty_per_wo = pn_group.groupby("WO Ref.")["Total_Qty"].sum()
+            resume_rows.append(row(
+                cat=pn,
+                met=f"{wos_with_pn} NRCs/{nb_wos_uniques} WOs      ({freq}%)",
+                qmin=qty_per_wo.min(),
+                qavg=round(qty_per_wo.mean(), 2),
+                qmax=qty_per_wo.max()
+            ))
+
+    resume_df = pd.DataFrame(resume_rows)
+
+    # Création 1 xlsx par task
+    output_file = output_dir / f"prevision_{input_task}.xlsx"
+
+    # Création 2 tabs (Résumé et Détails)
+    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+        resume_df.to_excel(writer, sheet_name="Résumé", index=False, header=False)
+        if not summary_df.empty:
+            summary_df.to_excel(writer, sheet_name="Détails", index=False)
+
+    print(f"{output_file.name} ({nb_wos_uniques} WOs, {nb_lignes_nrc} lignes NRC, {proba_globale}%)")
+
+
+##### Loop sur toutes les taches du fichier "Task_to_plan.xlsx"
+sheets = pd.read_excel(task_file, sheet_name=None)     # lecture des tabs de cet input xlsx
+
+for sheet_name, sheet_df in sheets.items():
+    if "TASK_REF" not in sheet_df.columns:
+        print(f"Onglet '{sheet_name}' : colonne 'TASK_REF' introuvable, ignoré.")
+        continuepct
+
+    tasks = sheet_df["TASK_REF"].dropna().unique()      # task unique dans colonne TASK_REF
+    print(f"\nOnglet '{sheet_name}' — {len(tasks)} tâche(s)")
+
+    # Création un dossier par tab
+    output_dir = output_base / sheet_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Analyse de chaque task
+    for input_task in tqdm(tasks, desc=f"  {sheet_name}"):
+        analyse_task(str(input_task).strip(), df, output_dir)
+
+print(f"\nTerminé ! Fichiers dans : {output_base}/")
+

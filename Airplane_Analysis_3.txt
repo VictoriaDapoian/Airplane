@@ -1,0 +1,110 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+
+##########################################################################
+# Lecture des fichiers prevision_*.xlsx dans chaque input dossier,
+# Extraction des PNs avec NRC et leurs stat (nb WOs, nb NRCs, %, qty),
+# Création fichier summary_[dossier].xlsx par dossier.
+#
+# Input  : dossiers output_previsions/1535 et output_previsions/1538
+# Output : summary_1535.xlsx et summary_1538.xlsx dans chaque dossier
+##########################################################################
+
+
+import pandas as pd
+from pathlib import Path
+import re
+
+#### Noms des 2 inputs
+folders = [
+    Path("output_previsions/1535"),
+    Path("output_previsions/1538"),
+]
+
+#### Extraction infos des fichiers "prevision_*.xlsx"
+def parse_prevision_file(filepath):
+    wb_sheets = pd.read_excel(filepath, sheet_name=None, header=None)
+    resume = wb_sheets.get("Résumé")
+    
+    # Extraire le nom de la tâche
+    task_name = ""
+    nb_wos = 0
+    rows = resume.values.tolist()
+
+    # Parcourt toutes les lignes (info Task et nb WOs uniques)
+    for r in rows:
+        if str(r[0]).strip() == "Task":
+            task_name = str(r[1]).strip()
+        if str(r[0]).strip() == "Nb WOs uniques":
+            nb_wos = int(r[1]) if pd.notna(r[1]) else 0
+
+    # Trouver la section "INFOS PNs NRC"
+    in_pn_section = False
+    pn_rows = []
+
+    for r in rows:
+        cat = str(r[0]).strip()
+        if cat == "INFOS PNs NRC":
+            in_pn_section = True       # activation flag PN section
+            continue
+        if in_pn_section:
+            if cat == "" or pd.isna(r[0]):
+                continue
+            metrique = str(r[1]).strip() if pd.notna(r[1]) else ""
+            # Parse pattern "X NRCs/Y WOs (Z%)" dans 2e colonne 
+            match = re.match(r"(\d+)\s+NRCs?/(\d+)\s+WOs", metrique)
+            if not match:
+                continue
+            nb_nrc = int(match.group(1))
+
+            # Lire colonnes des quantites (min, avg, max)
+            qmin = r[2] if pd.notna(r[2]) else ""
+            qavg = r[3] if pd.notna(r[3]) else ""
+            qmax = r[4] if pd.notna(r[4]) else ""
+            pourcentage = round(nb_nrc / nb_wos * 100, 1) if nb_wos > 0 else 0
+
+            pn_rows.append({
+                "Task": task_name,
+                "PN": cat,
+                "# WOs Réalisés": nb_wos,
+                "# Besoin en NRC": nb_nrc,
+                "% de besoin": f"{pourcentage}%",
+                "Qty Min": qmin,
+                "Qty Avg": qavg,
+                "Qty Max": qmax,
+            })
+
+    return task_name, pn_rows
+
+
+#####################################
+#### Boucle sur les deux dossiers 
+#####################################
+for folder in folders:
+    # Vérification existence des dossiers 
+    if not folder.exists():
+        print(f"Dossier introuvable: {folder}")
+        continue
+    input_files = sorted(folder.glob("prevision_*.xlsx"))
+    print(f"\n Fichier {folder.name}: {len(input_files)} inputs")
+    
+    folder_rows = []
+    for file in input_files:
+        task_name, nrc_rows = parse_prevision_file(file)
+        print(f"  {file.name} → {len(nrc_rows)} PNs NRC")
+        folder_rows.extend(nrc_rows)
+
+    summary_df = pd.DataFrame(folder_rows)
+    output_file = folder / f"summary_{folder.name}.xlsx"
+
+    if summary_df.empty:
+        print(f"  Aucun PN NRC trouvé")
+    else:
+        summary_df.to_excel(output_file, index=False)
+        print(f"--> {output_file.name} — {len(summary_df)} lignes")
+
+
+
+
+
